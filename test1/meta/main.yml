@@ -1,0 +1,19 @@
+---
+dependencies:
+  - role: JamesBelchamber.logrotate
+    tags:
+      - JamesBelchamber.logrotate
+    logrotate_paths:
+      - path:
+          - "/var/log/vault_audit.log"
+    logrotate_applications:
+      - name: vault
+        options:
+          - "daily"
+          - "compress"
+          - "dateext"
+          - "rotate 7"
+          - "create 0600 vault vault"
+          - "notifempty"
+          - "missingok"
+        scripts: []
