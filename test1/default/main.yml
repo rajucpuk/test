@@ -1,0 +1,7 @@
+---
+vault_version: '0.8.1'
+vault_data_path: '/var/vault/data'
+vault_enable_ha: false
+vault_server_nodes: []
+vault_interface: "{{ ansible_default_ipv4.alias }}"
+vault_ip: "{{ hostvars[ansible_nodename]['ansible_' + vault_interface]['ipv4']['address'] }}"
