@@ -1,0 +1,19 @@
+{% if vault_enable_ha %}
+storage "consul" {
+ address = "127.0.0.1:8500"
+ path = "vault/"
+}
+{% else %}
+storage "file" {
+ path = "{{ vault_data_path }}"
+}
+{% endif %}
+
+listener "tcp" {
+ address = "0.0.0.0:8200"
+ tls_disable = 1
+}
+
+{% if vault_enable_ha %}
+cluster_name = "{{ platform }}-{{ env }}-vault"
+{% endif %}
