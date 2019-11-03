@@ -1,0 +1,11 @@
+[Unit]
+Description=HashiCorp Vault Service
+After=consul.service
+
+[Service]
+ExecStart=/usr/bin/vault server -config=/etc/vault/vaultconfig.hcl
+User=vault
+
+
+[Install]
+WantedBy=multi-user.target
