@@ -1,0 +1,104 @@
+---
+- debug:
+    msg: "{{ hashicorp_repo_url }}/vault/{{ vault_version }}/vault_{{ vault_version }}_linux_amd64.zip"
+
+- name: Install 'unzip' for Ansible unarchive module
+  yum:
+    name: unzip
+    state: present
+
+- name: Download and install vault binary
+  unarchive:
+    src: "{{ hashicorp_repo_url }}/vault/{{ vault_version }}/vault_{{ vault_version }}_linux_amd64.zip"
+    dest: /usr/bin/
+    remote_src: True
+    creates: /usr/bin/vault
+    validate_certs: "{{ vault_validate_certs | default( omit ) }}"
+  become: true
+
+- name: Create vault config directory
+  file: state=directory path=/etc/vault/
+  become: true
+
+- name: Copy vault config
+  template:
+    src: vaultconfig.hcl.j2
+    dest: /etc/vault/vaultconfig.hcl
+  become: true
+
+- name: Copy vault service to server
+  copy: src=vault.service dest=/usr/lib/systemd/system/vault.service
+  become: true
+
+- name: Vault user group
+  group:
+    name: vault
+    state: present
+
+- user:
+    name: vault
+    group: vault
+    comment: "Vault system user"
+    system: yes
+    seuser: system_u
+
+- name: Allow vault user to use mlock syscall
+  command: setcap cap_ipc_lock=+ep /usr/bin/vault
+  become: true
+
+- name: Create vault var directory
+  file: state=directory path=/var/vault/ owner=vault group=vault
+
+- name: Create vault log file
+  file:
+    state: touch
+    path: /var/log/vault_audit.log
+    owner: vault
+    group: vault
+
+- name: Start vault service
+  systemd:
+    state: started
+    enabled: yes
+    name: vault
+    daemon_reload: yes
+  become: true
+
+- name: Check if vault has been already initialized
+  uri:
+    url: "http://127.0.0.1:8200/v1/sys/health"
+    method: HEAD
+    return_content: yes
+  ignore_errors: yes
+  register: vault_init_state
+
+- name: Initialize the vault
+  command: vault init /home/vault
+  register: keys
+  environment:
+    VAULT_ADDR: "http://127.0.0.1:8200"
+  when: ( vault_init_state is defined and vault_init_state.status is defined and vault_init_state.status >= 500 )
+
+- name: SAVE THIS SOMEWHERE! Otherwise vagrant destroy vault will be the only way to unseal
+  debug:
+    msg: "{{ keys.stdout }}"
+  when: ( keys is defined and keys.stdout is defined )
+
+- name: This saves Vault keys in /root/vault_keys. This file needs to be removed ASAP.
+  copy:
+    content: "{{ keys.stdout }}"
+    dest: /root/vault_keys
+  when: ( vault_init_state is defined and vault_init_state.status is defined and vault_init_state.status >= 500 )
+
+- name: Fail to allow running of script to configure vault when using vagrant
+  fail:
+    msg: "Run scripts/create_vault_secrets.sh to unseal and configure secrets in vault"
+  when: ( vault_init_state.status == 501 and platform == 'local' )
+
+- name: Create log file
+  file:
+    dest: /var/log/vault_audit.log
+    mode: '0600'
+    owner: vault
+    group: vault
+    state: touch
