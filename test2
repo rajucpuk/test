@@ -1,0 +1,124 @@
+---
+#
+# This playbook can be used to generate host certs,
+# service certs and update keystores
+# Its behaviour is driven by the ssl_certs dict,
+# which must be present for each role under group_vars
+#
+# Note. The serial setting is only relevant
+# for service certs, where the first host triggers the
+# cert to be generated. That MUST be done before  other
+# hosts can load it
+# 
+#
+- name: update ssl certs
+  hosts: all
+  become: true
+  serial:
+    - 1
+    - "100%"
+  vars:
+    curl_opts: '-k'
+    vault_token: "{{ lookup('env', 'VAULT_TOKEN') }}"
+    always_renew_host_cert: true
+
+  tasks:
+    - name: set key_suffix to timestamp
+      set_fact:
+        key_suffix:  "{{ ansible_date_time.date }}_{{ ansible_date_time.time }}"
+      check_mode: no
+      tags:
+        - always
+    # 
+    # cert update required
+    #
+    - block:
+        #
+        # host cert ( always run against the host )
+        #
+        - block:
+            - name: backup existing host certs
+              include_role:
+                name: recycle_certs
+            - name: Generate new host certs ( crt,pem,pfx )
+              include_role:
+                name: vault-ca-cert-issue
+              vars:
+                vault_validate_certs: true
+            - block:
+                #
+                # alternative cert/key locations defined
+                #
+                - name: set alternative cert name to host cert name
+                  set_fact:
+                    certname: "{{ inventory_hostname }}"
+                  check_mode: no
+                  when: ssl_certs.alt_cert_name is not defined
+                - name: set alternative cert name to specified value
+                  set_fact:
+                    certname: "{{ ssl_certs.alt_cert_name }}"
+                  check_mode: no
+                  when: ssl_certs.alt_cert_name is defined
+                - name: copy cert to alternative path
+                  command: 'cp /etc/pki/tls/certs/{{ inventory_hostname }}.crt {{ ssl_certs.alt_cert_path }}/{{ certname }}.crt'
+                - name: copy key to alternative path
+                  command: 'cp /etc/pki/tls/private/{{ inventory_hostname }}.key {{ ssl_certs.alt_key_path }}/{{ certname }}.key'
+              when: ssl_certs.alt_cert_path is defined
+          when: ( ssl_certs.cert_type == 'host')  or ( always_renew_host_cert )
+        - block:
+            #
+            # shared service cert
+            #
+            - name: Delete existing service cert from vault
+              shell: "curl {{ curl_opts }} -X DELETE -H \"X-Vault-Token: {{ vault_token }}\" -H \"Content-Type: application/json\" {{ lookup('env', 'VAULT_ADDR') }}/{{ vault_api_version }}/secret/mgmt/service_certs/{{ vault_shared_service_cert_name }}"
+              delegate_to: 127.0.0.1
+              become: false
+              when: inventory_hostname == ansible_play_hosts_all[0]
+            - name: Generate new service cert
+              include_role:
+                name: vault-shared-service-cert
+          when: ssl_certs.cert_type == 'service'
+
+        - block:
+            #
+            # regenerate java keystore
+            #
+            - name: check keystore exists
+              stat:
+                path: "{{ ssl_certs.keystore_file }}"
+              register: check_keystore
+              check_mode: no
+            - name: rename keystore
+              command: "mv {{ ssl_certs.keystore_file }} {{ ssl_certs.keystore_file }}.{{ key_suffix }}"
+              when: check_keystore.stat.exists
+            - name: run generate_java_keystore role
+              include_role:
+                name: generate_java_keystore
+              vars:
+                keystore_file: "{{ ssl_certs.keystore_file }}"
+                keystore_password: "{{ ssl_certs.keystore_password }}"
+                keystore_name: "{{ ssl_certs.keystore_name }}"
+                key_password: "{{ ssl_certs.key_password }}"
+          when: ssl_certs.keystore_file is defined 
+          tags:
+            - keystore
+        #
+        # restart service
+        #
+        - name: Get list of services to restart
+          set_fact:
+            service_list:  "{{ ssl_certs.service.split(',') }}"
+          check_mode: no
+        - name: Restart servicesystemd
+          systemd:
+            name: "{{ item }}"
+            state: restarted
+          with_items: "{{ service_list }}"
+          when: ssl_certs.port is defined
+
+      when: ssl_certs is defined
+
+    - name: No action required
+      debug:
+        msg: "NO ssl_certs dict found for {{ inventory_hostname }} - NO certificate renewal performed"
+      when: ssl_certs is  not defined
